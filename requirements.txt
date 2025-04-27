@@ -1,6 +1,5 @@
-streamlit 
-time
-pandas 
-quotexapi
-datetime
+streamlit
+pandas
+numpy
 requests
+quotexapi
