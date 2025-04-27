@@ -1,1 +1,6 @@
-streamlit
+streamlit 
+time
+pandas 
+quotexapi
+datetime
+requests
