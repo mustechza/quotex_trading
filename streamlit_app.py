@@ -1,135 +1,156 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
-import datetime
 import time
 
-# ========== SETTINGS ==========
-ASSETS = ['ETH/USDT', 'SOL/USDT', 'ADA/USDT', 'BNB/USDT', 'XRP/USDT', 'LTC/USDT']
-STRATEGIES = ['Magic Secret', 'RSI Divergence', 'EMA Cross Only']
-UPDATE_INTERVAL = 60  # seconds
-CANDLE_LIMIT = 500  # for backtest mode
+# ========== Settings ==========
+ASSETS = ['ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT', 'LTCUSDT']
+CANDLE_INTERVAL = '1m'  # 1 minute
+CANDLE_LIMIT = 500
+TRADE_AMOUNT = 1  # $ per trade
+START_BALANCE = 100  # starting balance
 
-# ========== FUNCTIONS ==========
+# ========== Helper Functions ==========
 
-def fetch_binance_candles(symbol, interval='1m', limit=500):
-    symbol = symbol.replace('/', '')
+def get_binance_candles(symbol, interval='1m', limit=500):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    r = requests.get(url)
-    data = r.json()
-    candles = pd.DataFrame(data, columns=['time','open','high','low','close','volume','close_time','qav','n_trades','tbbav','tbqav','ignore'])
-    candles['time'] = pd.to_datetime(candles['time'], unit='ms')
-    candles['open'] = candles['open'].astype(float)
-    candles['high'] = candles['high'].astype(float)
-    candles['low'] = candles['low'].astype(float)
-    candles['close'] = candles['close'].astype(float)
-    candles['volume'] = candles['volume'].astype(float)
-    return candles[['time','open','high','low','close','volume']]
+    response = requests.get(url)
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_volume', 'number_of_trades',
+        'taker_buy_base', 'taker_buy_quote', 'ignore'
+    ])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df['close'] = df['close'].astype(float)
+    df.set_index('timestamp', inplace=True)
+    return df[['close']]
 
-def magic_secret_strategy(df):
-    df['EMA5'] = df['close'].ewm(span=5).mean()
-    df['EMA20'] = df['close'].ewm(span=20).mean()
+def compute_indicators(df):
+    df['EMA5'] = df['close'].ewm(span=5, adjust=False).mean()
+    df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
     df['RSI'] = compute_rsi(df['close'], 14)
-    signal = None
-    if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] > 50:
-        signal = 'CALL'
-    elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] < 50:
-        signal = 'PUT'
-    return signal
-
-def ema_cross_only_strategy(df):
-    df['EMA5'] = df['close'].ewm(span=5).mean()
-    df['EMA20'] = df['close'].ewm(span=20).mean()
-    signal = None
-    if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1]:
-        signal = 'CALL'
-    elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1]:
-        signal = 'PUT'
-    return signal
-
-def rsi_divergence_strategy(df):
-    df['RSI'] = compute_rsi(df['close'], 14)
-    signal = None
-    if df['RSI'].iloc[-1] < 30:
-        signal = 'CALL'
-    elif df['RSI'].iloc[-1] > 70:
-        signal = 'PUT'
-    return signal
+    return df
 
 def compute_rsi(series, period=14):
     delta = series.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(window=period).mean()
-    avg_loss = pd.Series(loss).rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-def generate_signal(df, strategy):
-    if strategy == 'Magic Secret':
+def magic_secret_strategy(df):
+    if len(df) >= 20:
+        if not pd.isna(df['EMA5'].iloc[-1]) and not pd.isna(df['EMA20'].iloc[-1]) and not pd.isna(df['RSI'].iloc[-1]):
+            if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] > 50:
+                return 'CALL'
+            elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] < 50:
+                return 'PUT'
+    return None
+
+def ema_cross_only_strategy(df):
+    if len(df) >= 20:
+        if not pd.isna(df['EMA5'].iloc[-1]) and not pd.isna(df['EMA20'].iloc[-1]):
+            if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1]:
+                return 'CALL'
+            elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1]:
+                return 'PUT'
+    return None
+
+def rsi_divergence_strategy(df):
+    if len(df) >= 14:
+        if not pd.isna(df['RSI'].iloc[-1]):
+            if df['RSI'].iloc[-1] < 30:
+                return 'CALL'
+            elif df['RSI'].iloc[-1] > 70:
+                return 'PUT'
+    return None
+
+def generate_signal(df, strategy_name):
+    if strategy_name == "Magic Secret":
         return magic_secret_strategy(df)
-    elif strategy == 'EMA Cross Only':
+    elif strategy_name == "EMA Cross":
         return ema_cross_only_strategy(df)
-    elif strategy == 'RSI Divergence':
+    elif strategy_name == "RSI Divergence":
         return rsi_divergence_strategy(df)
-    else:
-        return None
+    return None
 
-# ========== STREAMLIT UI ==========
+# ========== Streamlit App ==========
 
-st.set_page_config(page_title="Crypto Signal App", layout="wide")
-st.title("Manual Trading Signal Generator")
-menu = st.sidebar.selectbox("Select Mode", ["Live Trading", "Backtest", "Settings"])
-st.sidebar.markdown("---")
+st.set_page_config(page_title="Quotex Signal Sender", layout="wide")
+st.title("Quotex Manual Signal Sender")
 
-selected_asset = st.sidebar.selectbox("Select Asset", ASSETS)
-selected_strategy = st.sidebar.selectbox("Select Strategy", STRATEGIES)
+col1, col2 = st.columns(2)
 
-if 'trade_log' not in st.session_state:
-    st.session_state['trade_log'] = []
+with col1:
+    selected_asset = st.selectbox("Select Asset", ASSETS)
 
-# ========== LIVE TRADING ==========
-if menu == "Live Trading":
-    placeholder = st.empty()
+with col2:
+    selected_strategy = st.selectbox("Select Strategy", ["Magic Secret", "EMA Cross", "RSI Divergence"])
 
-    while True:
-        with placeholder.container():
-            df = fetch_binance_candles(selected_asset, '1m', 100)
-            signal = generate_signal(df, selected_strategy)
+take_profit = st.number_input("Take Profit ($)", min_value=1, value=10)
+stop_loss = st.number_input("Stop Loss ($)", min_value=1, value=10)
 
-            st.subheader(f"Asset: {selected_asset}")
-            st.subheader(f"Strategy: {selected_strategy}")
-            st.metric(label="Signal", value=signal if signal else "No Signal", delta_color="normal")
-            st.line_chart(df.set_index('time')['close'])
+start = st.button("Start")
 
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if signal:
-                st.session_state.trade_log.append({"time": now, "asset": selected_asset, "strategy": selected_strategy, "signal": signal})
+if 'running' not in st.session_state:
+    st.session_state.running = False
+if start:
+    st.session_state.running = True
 
-            time.sleep(UPDATE_INTERVAL)
+balance = st.session_state.get('balance', START_BALANCE)
+trade_history = st.session_state.get('trade_history', [])
 
-# ========== BACKTEST ==========
-elif menu == "Backtest":
-    st.subheader("Backtest Mode")
-    df = fetch_binance_candles(selected_asset, '1m', CANDLE_LIMIT)
-    df['Signal'] = df.apply(lambda row: generate_signal(df.iloc[:row.name+1], selected_strategy), axis=1)
-    st.dataframe(df[['time','close','Signal']])
-    st.line_chart(df.set_index('time')['close'])
+if st.session_state.running:
+    placeholder_chart = st.empty()
+    placeholder_alert = st.empty()
+    placeholder_balance = st.empty()
 
-# ========== SETTINGS ==========
-elif menu == "Settings":
-    st.subheader("Settings & Trade History")
-    if st.session_state.trade_log:
-        trades = pd.DataFrame(st.session_state.trade_log)
-        st.dataframe(trades)
-        st.download_button("Download Trade History CSV", data=trades.to_csv(index=False), file_name="trade_history.csv", mime='text/csv')
-        calls = trades[trades['signal']=='CALL']
-        puts = trades[trades['signal']=='PUT']
-        total = len(trades)
-        st.write(f"Total Signals: {total}")
-        st.write(f"CALLs: {len(calls)}")
-        st.write(f"PUTs: {len(puts)}")
-    else:
-        st.info("No trades logged yet.")
+    while st.session_state.running:
+        df = get_binance_candles(selected_asset, interval=CANDLE_INTERVAL, limit=CANDLE_LIMIT)
+        df = compute_indicators(df)
+        
+        signal = generate_signal(df, selected_strategy)
+
+        placeholder_chart.line_chart(df['close'])
+
+        if signal:
+            with placeholder_alert.container():
+                st.success(f"Signal: {signal} for {selected_asset} with {selected_strategy} strategy!")
+
+            # Simulate trade
+            result = 'WIN' if signal == ('CALL' if df['close'].iloc[-1] > df['close'].iloc[-2] else 'PUT') else 'LOSS'
+
+            if result == 'WIN':
+                balance += TRADE_AMOUNT
+            else:
+                balance -= TRADE_AMOUNT
+
+            trade_history.append({
+                'Asset': selected_asset,
+                'Strategy': selected_strategy,
+                'Signal': signal,
+                'Result': result,
+                'Balance': balance,
+                'Time': pd.Timestamp.now()
+            })
+
+            st.session_state.balance = balance
+            st.session_state.trade_history = trade_history
+
+            if balance - START_BALANCE >= take_profit:
+                st.success(f"Take profit reached: ${balance}!")
+                st.session_state.running = False
+                break
+            if START_BALANCE - balance >= stop_loss:
+                st.error(f"Stop loss hit: ${balance}!")
+                st.session_state.running = False
+                break
+
+        placeholder_balance.metric("Balance", f"${balance:.2f}")
+
+        time.sleep(30)  # Update every 30 seconds
+
+if st.session_state.get('trade_history'):
+    st.subheader("Trade History")
+    st.dataframe(pd.DataFrame(st.session_state.trade_history))
