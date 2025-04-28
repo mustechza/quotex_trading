@@ -5,9 +5,8 @@ import time
 
 # ========== Settings ==========
 ASSETS = ['ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'BNBUSDT', 'XRPUSDT', 'LTCUSDT']
-CANDLE_INTERVAL = '1m'  # 1 minute
+CANDLE_INTERVAL = '1m'
 CANDLE_LIMIT = 500
-TRADE_AMOUNT = 1  # $ per trade
 START_BALANCE = 100  # starting balance
 
 # ========== Helper Functions ==========
@@ -77,17 +76,18 @@ def generate_signal(df, strategy_name):
 
 # ========== Streamlit App ==========
 
-st.set_page_config(page_title="Quotex Signal Sender", layout="wide")
-st.title("Quotex Manual Signal Sender")
+st.set_page_config(page_title="Multi Asset Signal Sender", layout="wide")
+st.title("Quotex Manual Signal Sender - Upgraded")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    selected_asset = st.selectbox("Select Asset", ASSETS)
+    selected_assets = st.multiselect("Select Assets", ASSETS, default=ASSETS)
 
 with col2:
     selected_strategy = st.selectbox("Select Strategy", ["Magic Secret", "EMA Cross", "RSI Divergence"])
 
+trade_amount = st.number_input("Trade Amount per Signal ($)", min_value=1, value=1)
 take_profit = st.number_input("Take Profit ($)", min_value=1, value=10)
 stop_loss = st.number_input("Stop Loss ($)", min_value=1, value=10)
 
@@ -102,54 +102,65 @@ balance = st.session_state.get('balance', START_BALANCE)
 trade_history = st.session_state.get('trade_history', [])
 
 if st.session_state.running:
-    placeholder_chart = st.empty()
     placeholder_alert = st.empty()
     placeholder_balance = st.empty()
+    placeholder_profit_chart = st.empty()
 
     while st.session_state.running:
-        df = get_binance_candles(selected_asset, interval=CANDLE_INTERVAL, limit=CANDLE_LIMIT)
-        df = compute_indicators(df)
+        all_signals = []
         
-        signal = generate_signal(df, selected_strategy)
+        for asset in selected_assets:
+            df = get_binance_candles(asset, interval=CANDLE_INTERVAL, limit=CANDLE_LIMIT)
+            df = compute_indicators(df)
 
-        placeholder_chart.line_chart(df['close'])
+            signal = generate_signal(df, selected_strategy)
 
-        if signal:
-            with placeholder_alert.container():
-                st.success(f"Signal: {signal} for {selected_asset} with {selected_strategy} strategy!")
+            if signal:
+                all_signals.append((asset, signal))
+                
+                # Simulate trade
+                result = 'WIN' if signal == ('CALL' if df['close'].iloc[-1] > df['close'].iloc[-2] else 'PUT') else 'LOSS'
 
-            # Simulate trade
-            result = 'WIN' if signal == ('CALL' if df['close'].iloc[-1] > df['close'].iloc[-2] else 'PUT') else 'LOSS'
+                if result == 'WIN':
+                    balance += trade_amount
+                else:
+                    balance -= trade_amount
 
-            if result == 'WIN':
-                balance += TRADE_AMOUNT
+                trade_history.append({
+                    'Asset': asset,
+                    'Strategy': selected_strategy,
+                    'Signal': signal,
+                    'Result': result,
+                    'Balance': balance,
+                    'Time': pd.Timestamp.now()
+                })
+
+                st.session_state.balance = balance
+                st.session_state.trade_history = trade_history
+
+        with placeholder_alert.container():
+            if all_signals:
+                for asset, sig in all_signals:
+                    st.success(f"{asset}: {sig}")
             else:
-                balance -= TRADE_AMOUNT
-
-            trade_history.append({
-                'Asset': selected_asset,
-                'Strategy': selected_strategy,
-                'Signal': signal,
-                'Result': result,
-                'Balance': balance,
-                'Time': pd.Timestamp.now()
-            })
-
-            st.session_state.balance = balance
-            st.session_state.trade_history = trade_history
-
-            if balance - START_BALANCE >= take_profit:
-                st.success(f"Take profit reached: ${balance}!")
-                st.session_state.running = False
-                break
-            if START_BALANCE - balance >= stop_loss:
-                st.error(f"Stop loss hit: ${balance}!")
-                st.session_state.running = False
-                break
+                st.info("No signal found.")
 
         placeholder_balance.metric("Balance", f"${balance:.2f}")
 
-        time.sleep(30)  # Update every 30 seconds
+        if balance - START_BALANCE >= take_profit:
+            st.success(f"Take profit reached: ${balance}!")
+            st.session_state.running = False
+            break
+        if START_BALANCE - balance >= stop_loss:
+            st.error(f"Stop loss hit: ${balance}!")
+            st.session_state.running = False
+            break
+
+        if st.session_state.get('trade_history'):
+            df_profit = pd.DataFrame(st.session_state.trade_history)
+            placeholder_profit_chart.line_chart(df_profit['Balance'])
+
+        time.sleep(30)  # update every 30 seconds
 
 if st.session_state.get('trade_history'):
     st.subheader("Trade History")
