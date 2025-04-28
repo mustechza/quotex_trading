@@ -1,162 +1,135 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import time
-import datetime
 import requests
-from quotexapi.stable_api import Quotex
+import datetime
+import time
 
-# --- Sidebar - Asset and Strategy Selection ---
-st.sidebar.header("Asset Selection")
-asset = st.sidebar.selectbox("Choose Asset", ["BTCUSD", "EURUSD", "GBPUSD", "ETHUSD"], index=0)
+# ========== SETTINGS ==========
+ASSETS = ['ETH/USDT', 'SOL/USDT', 'ADA/USDT', 'BNB/USDT', 'XRP/USDT', 'LTC/USDT']
+STRATEGIES = ['Magic Secret', 'RSI Divergence', 'EMA Cross Only']
+UPDATE_INTERVAL = 60  # seconds
+CANDLE_LIMIT = 500  # for backtest mode
 
-st.sidebar.header("Strategy Selection")
-strategy = st.sidebar.selectbox("Choose Strategy", ["Magic Strategy", "Simple MA Crossover", "RSI Strategy"], index=0)
+# ========== FUNCTIONS ==========
 
-# --- Sidebar - Trading Settings ---
-st.sidebar.header("Trading Settings")
-email = st.sidebar.text_input("Quotex Email")
-password = st.sidebar.text_input("Quotex Password", type="password")
-trade_amount = st.sidebar.number_input("Trade Amount ($)", min_value=1.0, value=1.0)
-take_profit = st.sidebar.number_input("Take Profit ($)", min_value=1.0, value=20.0)
-stop_loss = st.sidebar.number_input("Stop Loss ($)", min_value=1.0, value=10.0)
-max_consecutive_losses = st.sidebar.number_input("Max Consecutive Losses", min_value=1, value=3)
-manual_trade = st.sidebar.radio("Manual Trade", ["No", "BUY", "SELL"])
+def fetch_binance_candles(symbol, interval='1m', limit=500):
+    symbol = symbol.replace('/', '')
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    r = requests.get(url)
+    data = r.json()
+    candles = pd.DataFrame(data, columns=['time','open','high','low','close','volume','close_time','qav','n_trades','tbbav','tbqav','ignore'])
+    candles['time'] = pd.to_datetime(candles['time'], unit='ms')
+    candles['open'] = candles['open'].astype(float)
+    candles['high'] = candles['high'].astype(float)
+    candles['low'] = candles['low'].astype(float)
+    candles['close'] = candles['close'].astype(float)
+    candles['volume'] = candles['volume'].astype(float)
+    return candles[['time','open','high','low','close','volume']]
 
-start_trading = st.sidebar.button("Start Bot")
+def magic_secret_strategy(df):
+    df['EMA5'] = df['close'].ewm(span=5).mean()
+    df['EMA20'] = df['close'].ewm(span=20).mean()
+    df['RSI'] = compute_rsi(df['close'], 14)
+    signal = None
+    if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] > 50:
+        signal = 'CALL'
+    elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1] and df['RSI'].iloc[-1] < 50:
+        signal = 'PUT'
+    return signal
 
-# --- Main page ---
-st.title("Quotex Auto Trading Bot with Strategy Switcher")
-chart_placeholder = st.empty()
-signal_placeholder = st.empty()
-profit_placeholder = st.empty()
+def ema_cross_only_strategy(df):
+    df['EMA5'] = df['close'].ewm(span=5).mean()
+    df['EMA20'] = df['close'].ewm(span=20).mean()
+    signal = None
+    if df['EMA5'].iloc[-1] > df['EMA20'].iloc[-1]:
+        signal = 'CALL'
+    elif df['EMA5'].iloc[-1] < df['EMA20'].iloc[-1]:
+        signal = 'PUT'
+    return signal
 
-# --- Functions ---
-def fetch_candles(asset, timeframe='M1', count=100):
-    url = f"https://api.tradingeconomics.com/markets/symbol/{asset}:CUR?c=guest:guest"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        prices = []
-        for _ in range(count):
-            prices.append({
-                'open': np.random.uniform(20000, 30000),
-                'high': np.random.uniform(30000, 31000),
-                'low': np.random.uniform(19000, 20000),
-                'close': np.random.uniform(20000, 30000),
-                'time': datetime.datetime.now()
-            })
-        return pd.DataFrame(prices)
-    except:
-        st.error("Failed to fetch candles")
-        return pd.DataFrame()
+def rsi_divergence_strategy(df):
+    df['RSI'] = compute_rsi(df['close'], 14)
+    signal = None
+    if df['RSI'].iloc[-1] < 30:
+        signal = 'CALL'
+    elif df['RSI'].iloc[-1] > 70:
+        signal = 'PUT'
+    return signal
 
-def calculate_signal(df, strategy_name):
-    if strategy_name == "Magic Strategy":
-        df['heiken_ashi'] = (df['open'] + df['close'] + df['high'] + df['low']) / 4
-        df['MA'] = df['heiken_ashi'].rolling(window=10).mean()
-        df['ROC'] = df['heiken_ashi'].pct_change(periods=5)
-        last = df.iloc[-1]
-        if last['heiken_ashi'] > last['MA'] and last['ROC'] > 0:
-            return 'BUY'
-        elif last['heiken_ashi'] < last['MA'] and last['ROC'] < 0:
-            return 'SELL'
-        else:
-            return ''
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=period).mean()
+    avg_loss = pd.Series(loss).rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-    elif strategy_name == "Simple MA Crossover":
-        df['SMA_Short'] = df['close'].rolling(window=5).mean()
-        df['SMA_Long'] = df['close'].rolling(window=20).mean()
-        last = df.iloc[-1]
-        previous = df.iloc[-2]
-        if previous['SMA_Short'] < previous['SMA_Long'] and last['SMA_Short'] > last['SMA_Long']:
-            return 'BUY'
-        elif previous['SMA_Short'] > previous['SMA_Long'] and last['SMA_Short'] < last['SMA_Long']:
-            return 'SELL'
-        else:
-            return ''
-
-    elif strategy_name == "RSI Strategy":
-        delta = df['close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -1 * delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14).mean()
-        avg_loss = loss.rolling(window=14).mean()
-        rs = avg_gain / avg_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        last = df.iloc[-1]
-        if last['RSI'] < 30:
-            return 'BUY'
-        elif last['RSI'] > 70:
-            return 'SELL'
-        else:
-            return ''
-
-def place_trade(qx, asset, action, amount):
-    try:
-        if action == 'BUY':
-            qx.buy(amount, asset, "turbo", "call", 1)
-        elif action == 'SELL':
-            qx.buy(amount, asset, "turbo", "put", 1)
-    except Exception as e:
-        st.error(f"Trade failed: {str(e)}")
-
-# --- Main Logic ---
-if start_trading:
-    if not email or not password:
-        st.warning("Please input Quotex credentials first.")
+def generate_signal(df, strategy):
+    if strategy == 'Magic Secret':
+        return magic_secret_strategy(df)
+    elif strategy == 'EMA Cross Only':
+        return ema_cross_only_strategy(df)
+    elif strategy == 'RSI Divergence':
+        return rsi_divergence_strategy(df)
     else:
-        st.success("Bot is Running!")
+        return None
 
-        qx = Quotex(email, password)
-        qx.connect()
-        qx.change_account("demo")  # Use demo account for safety
+# ========== STREAMLIT UI ==========
 
-        consecutive_losses = 0
-        total_profit = 0
+st.set_page_config(page_title="Crypto Signal App", layout="wide")
+st.title("Manual Trading Signal Generator")
+menu = st.sidebar.selectbox("Select Mode", ["Live Trading", "Backtest", "Settings"])
+st.sidebar.markdown("---")
 
-        while True:
-            df = fetch_candles(asset)
-            if df.empty:
-                time.sleep(30)
-                continue
+selected_asset = st.sidebar.selectbox("Select Asset", ASSETS)
+selected_strategy = st.sidebar.selectbox("Select Strategy", STRATEGIES)
 
-            chart_placeholder.line_chart(df['close'])
+if 'trade_log' not in st.session_state:
+    st.session_state['trade_log'] = []
 
-            current_signal = calculate_signal(df, strategy)
+# ========== LIVE TRADING ==========
+if menu == "Live Trading":
+    placeholder = st.empty()
 
-            # Show current signal
-            if current_signal:
-                signal_placeholder.success(f"Signal: {current_signal}")
-            else:
-                signal_placeholder.info("No clear signal.")
+    while True:
+        with placeholder.container():
+            df = fetch_binance_candles(selected_asset, '1m', 100)
+            signal = generate_signal(df, selected_strategy)
 
-            # Trading logic
-            if manual_trade == "No":
-                if current_signal:
-                    place_trade(qx, asset, current_signal, trade_amount)
-            else:
-                place_trade(qx, asset, manual_trade, trade_amount)
+            st.subheader(f"Asset: {selected_asset}")
+            st.subheader(f"Strategy: {selected_strategy}")
+            st.metric(label="Signal", value=signal if signal else "No Signal", delta_color="normal")
+            st.line_chart(df.set_index('time')['close'])
 
-            # Simulate profit/loss
-            simulated_result = np.random.choice([-trade_amount, trade_amount])
-            total_profit += simulated_result
-            profit_placeholder.metric("Total Profit ($)", f"${total_profit:.2f}")
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if signal:
+                st.session_state.trade_log.append({"time": now, "asset": selected_asset, "strategy": selected_strategy, "signal": signal})
 
-            if simulated_result < 0:
-                consecutive_losses += 1
-            else:
-                consecutive_losses = 0
+            time.sleep(UPDATE_INTERVAL)
 
-            # Stop Loss / Take Profit check
-            if total_profit <= -stop_loss:
-                st.error("Stop Loss hit. Bot stopped.")
-                break
-            if total_profit >= take_profit:
-                st.success("Take Profit target achieved. Bot stopped.")
-                break
-            if consecutive_losses >= max_consecutive_losses:
-                st.error("Max consecutive losses reached. Bot stopped.")
-                break
+# ========== BACKTEST ==========
+elif menu == "Backtest":
+    st.subheader("Backtest Mode")
+    df = fetch_binance_candles(selected_asset, '1m', CANDLE_LIMIT)
+    df['Signal'] = df.apply(lambda row: generate_signal(df.iloc[:row.name+1], selected_strategy), axis=1)
+    st.dataframe(df[['time','close','Signal']])
+    st.line_chart(df.set_index('time')['close'])
 
-            time.sleep(30)
+# ========== SETTINGS ==========
+elif menu == "Settings":
+    st.subheader("Settings & Trade History")
+    if st.session_state.trade_log:
+        trades = pd.DataFrame(st.session_state.trade_log)
+        st.dataframe(trades)
+        st.download_button("Download Trade History CSV", data=trades.to_csv(index=False), file_name="trade_history.csv", mime='text/csv')
+        calls = trades[trades['signal']=='CALL']
+        puts = trades[trades['signal']=='PUT']
+        total = len(trades)
+        st.write(f"Total Signals: {total}")
+        st.write(f"CALLs: {len(calls)}")
+        st.write(f"PUTs: {len(puts)}")
+    else:
+        st.info("No trades logged yet.")
