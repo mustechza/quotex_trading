@@ -1,2 +1,1 @@
-streamlit
-python-dotenv
+pip install streamlit pandas numpy plotly
