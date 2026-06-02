@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import json
 from collections import Counter
 import io
+from scipy import stats
 
 # Page configuration
 st.set_page_config(
@@ -18,57 +19,123 @@ st.set_page_config(
 # Title and description
 st.title("🎲 BC.Game Crash Multiplier Tracker")
 st.markdown("""
-This app analyzes crash multipliers from BC.Game JSON data to identify patterns and predict **most overdue multipliers** 
-based on historical frequency of occurrence.
+This app analyzes crash multipliers from BC.Game JSON data and allows **manual addition of new multipliers** 
+to track patterns and predict most overdue multipliers in real-time.
 """)
 
-# Sidebar controls
-st.sidebar.header("⚙️ Settings")
+# Initialize session state for data persistence
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'manual_entries' not in st.session_state:
+    st.session_state.manual_entries = []
+if 'data_source' not in st.session_state:
+    st.session_state.data_source = "File Upload"
 
 def load_data_from_json(file):
     """Load and process BC.Game crash JSON data"""
     try:
-        # Read JSON file
         data = json.load(file)
-        
-        # Convert to DataFrame
         df = pd.DataFrame(data)
-        
-        # Convert rate to float (it might be stored as string)
         df['rate'] = df['rate'].astype(float)
-        
-        # Convert timestamps to datetime
         df['beginTime_dt'] = pd.to_datetime(df['beginTime'], unit='ms')
         df['endTime_dt'] = pd.to_datetime(df['endTime'], unit='ms')
         df['prepareTime_dt'] = pd.to_datetime(df['prepareTime'], unit='ms')
         df['fetchedAt_dt'] = pd.to_datetime(df['fetchedAt'])
-        
-        # Calculate game duration
         df['duration_ms'] = df['endTime'] - df['beginTime']
-        
-        # Sort by endTime (most recent last)
+        df['data_source'] = 'file'
         df = df.sort_values('endTime', ascending=True).reset_index(drop=True)
-        
         return df
     except Exception as e:
         st.error(f"Error loading file: {str(e)}")
         return None
 
-# File upload
-uploaded_file = st.sidebar.file_uploader("Upload BC.Game JSON file", type=['json'])
-
-if uploaded_file is not None:
-    df = load_data_from_json(uploaded_file)
-    if df is None:
-        st.stop()
-    st.sidebar.success(f"✅ Loaded {len(df)} rounds successfully!")
-else:
-    st.warning("⚠️ Please upload a BC.Game crash JSON file to begin analysis")
-    st.info("📁 Expected format: JSON array with fields: gameId, hash, beginTime, endTime, rate, etc.")
+def add_manual_entry(rate, game_id=None):
+    """Add a manual entry to the dataset"""
+    now = datetime.now()
+    timestamp_ms = int(now.timestamp() * 1000)
     
-    # Show example of expected format
-    with st.expander("📋 Expected JSON format example"):
-        st.code("""
+    new_entry = {
+        'gameId': game_id if game_id else f"MANUAL_{len(st.session_state.manual_entries) + 1}",
+        'hash': f"manual_{timestamp_ms}",
+        'beginTime': timestamp_ms - 30000,  # Assume 30 seconds before end
+        'endTime': timestamp_ms,
+        'prepareTime': timestamp_ms - 35000,
+        'fetchedAt': now.isoformat(),
+        'salt': "manual_entry",
+        'rate': rate,
+        'beginTime_dt': now - pd.Timedelta(seconds=30),
+        'endTime_dt': now,
+        'prepareTime_dt': now - pd.Timedelta(seconds=35),
+        'fetchedAt_dt': now,
+        'duration_ms': 30000,
+        'data_source': 'manual'
+    }
+    
+    st.session_state.manual_entries.append(new_entry)
+    
+    # Update the main dataframe if it exists
+    if st.session_state.df is not None:
+        manual_df = pd.DataFrame(st.session_state.manual_entries)
+        st.session_state.df = pd.concat([st.session_state.df, manual_df], ignore_index=True)
+        st.session_state.df = st.session_state.df.sort_values('endTime', ascending=True).reset_index(drop=True)
+    
+    return True
+
+def get_current_dataframe():
+    """Get the current combined dataframe"""
+    if st.session_state.df is not None:
+        return st.session_state.df
+    elif st.session_state.manual_entries:
+        return pd.DataFrame(st.session_state.manual_entries)
+    else:
+        return None
+
+# Sidebar controls
+st.sidebar.header("⚙️ Settings")
+
+# Data source selection
+data_option = st.sidebar.radio(
+    "Data Source",
+    ["Upload JSON File", "Use Manual Entry Only", "Combine Both"]
+)
+
+# File upload section
+uploaded_file = None
+if data_option in ["Upload JSON File", "Combine Both"]:
+    uploaded_file = st.sidebar.file_uploader("Upload BC.Game JSON file", type=['json'])
+    
+    if uploaded_file is not None and (st.session_state.df is None or st.session_state.data_source != "file"):
+        df_loaded = load_data_from_json(uploaded_file)
+        if df_loaded is not None:
+            if st.session_state.manual_entries and data_option == "Combine Both":
+                manual_df = pd.DataFrame(st.session_state.manual_entries)
+                st.session_state.df = pd.concat([df_loaded, manual_df], ignore_index=True)
+                st.session_state.df = st.session_state.df.sort_values('endTime', ascending=True).reset_index(drop=True)
+                st.session_state.data_source = "combined"
+            else:
+                st.session_state.df = df_loaded
+                st.session_state.data_source = "file"
+            st.sidebar.success(f"✅ Loaded {len(df_loaded)} rounds from file!")
+    
+    elif st.session_state.manual_entries and data_option == "Combine Both" and st.session_state.df is not None:
+        st.sidebar.success(f"✅ Combined data: {len(st.session_state.df)} total rounds")
+
+# Manual entry only mode
+if data_option == "Use Manual Entry Only" and st.session_state.manual_entries:
+    st.session_state.df = pd.DataFrame(st.session_state.manual_entries)
+    st.session_state.data_source = "manual_only"
+    st.sidebar.success(f"✅ Using {len(st.session_state.manual_entries)} manual entries")
+
+# Check if we have data
+if st.session_state.df is None and not st.session_state.manual_entries:
+    if data_option == "Use Manual Entry Only":
+        st.info("👋 Welcome! Use the 'Manual Data Entry' section below to start adding multipliers.")
+    else:
+        st.warning("⚠️ Please upload a JSON file or add manual entries to begin analysis")
+        
+        # Show example of expected format
+        with st.expander("📋 Expected JSON format example"):
+            st.code("""
 [
   {
     "hash": "50fe7c9b26deb719b1b0db09f13f066c6b35a2ec5a87bdd5fb78635befa7866d",
@@ -81,16 +148,41 @@ else:
     "rate": "2.1"
   }
 ]
-        """, language="json")
+            """, language="json")
+    
+    # Show manual entry form anyway
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("➕ Quick Add")
+    quick_rate = st.sidebar.number_input("Multiplier", min_value=1.0, max_value=1000.0, value=1.5, step=0.1)
+    if st.sidebar.button("Add Multiplier", type="primary", use_container_width=True):
+        add_manual_entry(quick_rate)
+        st.sidebar.success(f"Added {quick_rate}x!")
+        st.rerun()
+    
+    if not st.session_state.manual_entries:
+        st.stop()
+
+# Get current dataframe
+df = get_current_dataframe()
+if df is None:
+    st.error("No data available. Please add manual entries or upload a file.")
     st.stop()
 
+# Display data source info
+if st.session_state.data_source == "combined":
+    st.info(f"📊 Data source: {len(df) - len(st.session_state.manual_entries)} file rounds + {len(st.session_state.manual_entries)} manual entries = {len(df)} total")
+elif st.session_state.data_source == "manual_only":
+    st.info(f"📊 Data source: {len(df)} manual entries only")
+elif st.session_state.data_source == "file":
+    st.info(f"📊 Data source: {len(df)} rounds from uploaded file")
+
 # Get last N rounds
-n_rounds = st.sidebar.slider("Number of recent rounds to analyze", 50, min(500, len(df)), min(100, len(df)))
+n_rounds = st.sidebar.slider("Number of recent rounds to analyze", 20, min(500, len(df)), min(100, len(df)))
 recent_df = df.tail(n_rounds).copy()
 recent_df = recent_df.reset_index(drop=True)
 
 # Display basic stats
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
     st.metric("Total Rounds", len(df))
 with col2:
@@ -101,9 +193,9 @@ with col4:
     st.metric("Max Multiplier", f"{recent_df['rate'].max():.2f}x")
 with col5:
     st.metric("Min Multiplier", f"{recent_df['rate'].min():.2f}x")
-
-# Game info
-st.caption(f"📅 Data range: {df['endTime_dt'].min().strftime('%Y-%m-%d %H:%M:%S')} to {df['endTime_dt'].max().strftime('%Y-%m-%d %H:%M:%S')}")
+with col6:
+    manual_count = len([i for i in st.session_state.manual_entries if i['data_source'] == 'manual']) if st.session_state.manual_entries else 0
+    st.metric("Manual Entries", manual_count)
 
 # Define multiplier ranges
 bins = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0, 15.0, 25.0, 50.0, 100.0, float('inf')]
@@ -111,11 +203,90 @@ labels = ['1.00-1.50', '1.51-2.00', '2.01-2.50', '2.51-3.00', '3.01-4.00',
           '4.01-5.00', '5.01-7.50', '7.51-10.00', '10.01-15.00', 
           '15.01-25.00', '25.01-50.00', '50.01-100.00', '100.00+']
 
-# Tab layout
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Frequency Table", "🎯 Most Overdue", "📈 Recent History", "📉 Statistics", "📋 Raw Data"])
+# Main content area with tabs
+main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6 = st.tabs(
+    ["📝 Manual Entry", "📊 Frequency Table", "🎯 Most Overdue", "📈 Recent History", "📉 Statistics", "💾 Data Management"]
+)
 
-# ----- TAB 1: Multiplier Frequency Table -----
-with tab1:
+# ----- TAB 1: Manual Data Entry -----
+with main_tab1:
+    st.header("➕ Manual Data Entry")
+    st.markdown("Add new crash multipliers manually to update the analysis in real-time.")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.subheader("Single Entry")
+        rate_single = st.number_input("Multiplier", min_value=1.0, max_value=1000.0, value=1.5, step=0.1, key="single_rate")
+        game_id_single = st.text_input("Game ID (optional)", placeholder="Leave empty for auto-generate", key="single_gameid")
+        
+        if st.button("➕ Add Single Multiplier", type="primary", use_container_width=True):
+            add_manual_entry(rate_single, game_id_single if game_id_single else None)
+            st.success(f"✅ Added {rate_single}x to the dataset!")
+            st.rerun()
+    
+    with col2:
+        st.subheader("Batch Entry")
+        batch_rates = st.text_area(
+            "Enter multipliers (one per line)",
+            placeholder="1.5\n2.0\n1.2\n3.5\n10.0",
+            height=150,
+            key="batch_rates"
+        )
+        
+        if st.button("📦 Add Batch", use_container_width=True):
+            if batch_rates.strip():
+                rates = [float(x.strip()) for x in batch_rates.split('\n') if x.strip()]
+                for rate in rates:
+                    add_manual_entry(rate)
+                st.success(f"✅ Added {len(rates)} multipliers to the dataset!")
+                st.rerun()
+            else:
+                st.warning("Please enter at least one multiplier")
+    
+    with col3:
+        st.subheader("Quick Presets")
+        st.markdown("Click to add common multipliers:")
+        
+        preset_col1, preset_col2 = st.columns(2)
+        with preset_col1:
+            if st.button("1.0x (Crash)", use_container_width=True):
+                add_manual_entry(1.0)
+                st.rerun()
+            if st.button("1.5x", use_container_width=True):
+                add_manual_entry(1.5)
+                st.rerun()
+            if st.button("2.0x", use_container_width=True):
+                add_manual_entry(2.0)
+                st.rerun()
+            if st.button("3.0x", use_container_width=True):
+                add_manual_entry(3.0)
+                st.rerun()
+        
+        with preset_col2:
+            if st.button("5.0x", use_container_width=True):
+                add_manual_entry(5.0)
+                st.rerun()
+            if st.button("10.0x", use_container_width=True):
+                add_manual_entry(10.0)
+                st.rerun()
+            if st.button("50.0x", use_container_width=True):
+                add_manual_entry(50.0)
+                st.rerun()
+            if st.button("100.0x", use_container_width=True):
+                add_manual_entry(100.0)
+                st.rerun()
+    
+    # Recent manual entries
+    if st.session_state.manual_entries:
+        st.subheader("📋 Recent Manual Entries")
+        manual_df = pd.DataFrame(st.session_state.manual_entries[-10:][::-1])
+        manual_display = manual_df[['gameId', 'rate', 'endTime_dt']].copy()
+        manual_display.columns = ['Game ID', 'Multiplier', 'Added At']
+        st.dataframe(manual_display, use_container_width=True, hide_index=True)
+
+# ----- TAB 2: Multiplier Frequency Table -----
+with main_tab2:
     st.header("Multiplier Frequency Distribution")
     
     # Add range column
@@ -126,8 +297,6 @@ with tab1:
     freq_table = recent_df_copy['range'].value_counts().sort_index().reset_index()
     freq_table.columns = ['Multiplier Range', 'Frequency']
     freq_table['Percentage'] = (freq_table['Frequency'] / len(recent_df) * 100).round(1)
-    
-    # Add cumulative percentage
     freq_table['Cumulative %'] = freq_table['Percentage'].cumsum().round(1)
     
     # Display table
@@ -181,8 +350,8 @@ with tab1:
         fig2.update_layout(height=500)
         st.plotly_chart(fig2, use_container_width=True)
 
-# ----- TAB 2: Most Overdue Multipliers -----
-with tab2:
+# ----- TAB 3: Most Overdue Multipliers -----
+with main_tab3:
     st.header("🎯 Most Overdue Multipliers")
     st.markdown("""
     Based on **historical frequency from all data**, these multiplier ranges are **"overdue"** - meaning they've appeared 
@@ -202,7 +371,6 @@ with tab2:
     for label in labels:
         expected = historical_freq.get(label, 0)
         actual = current_freq.get(label, 0)
-        # If expected > actual, it's overdue
         overdue_scores[label] = max(0, expected - actual)
     
     # Create overdue dataframe
@@ -256,28 +424,19 @@ with tab2:
     fig.update_layout(xaxis_tickangle=-45, height=450)
     st.plotly_chart(fig, use_container_width=True)
     
-    # Explanation
-    with st.expander("ℹ️ How 'Overdue' is calculated"):
-        st.markdown("""
-        **Methodology:**
-        1. Calculate the **expected frequency** of each multiplier range from the complete historical dataset
-        2. Calculate the **actual frequency** in the last N rounds
-        3. **Overdue Score = Expected % - Actual %** (only when Expected > Actual)
-        4. Higher score = more overdue
-        
-        **Example:** If a range appears 15% of the time historically, but only 5% in recent rounds, it has a 10% overdue score.
-        
-        ⚠️ **Disclaimer:** This is statistical analysis only. Crash multipliers are random and past patterns don't guarantee future results.
-        """)
+    # Real-time prediction based on manual entries
+    if st.session_state.manual_entries:
+        st.subheader("🔄 Real-time Prediction Update")
+        st.info(f"Last {len(st.session_state.manual_entries)} manual entries have been incorporated into the overdue calculation above.")
 
-# ----- TAB 3: Recent History -----
-with tab3:
+# ----- TAB 4: Recent History -----
+with main_tab4:
     st.header("Recent Crash History")
     
     # Show last 50 rounds with formatting
-    display_df = recent_df.tail(50)[['gameId', 'rate', 'endTime_dt', 'duration_ms']].copy()
-    display_df = display_df[::-1].reset_index(drop=True)  # Reverse for chronological order
-    display_df.columns = ['Game ID', 'Multiplier', 'Time', 'Duration (ms)']
+    display_df = recent_df.tail(50)[['gameId', 'rate', 'endTime_dt', 'duration_ms', 'data_source']].copy()
+    display_df = display_df[::-1].reset_index(drop=True)
+    display_df.columns = ['Game ID', 'Multiplier', 'Time', 'Duration (ms)', 'Source']
     
     # Color function for multipliers
     def color_rate(val):
@@ -294,32 +453,52 @@ with tab3:
                 return 'background-color: #8e44ad; color: white'
         return ''
     
-    styled_df = display_df.style.map(color_rate, subset=['Multiplier'])
+    # Color source column
+    def color_source(val):
+        if val == 'manual':
+            return 'background-color: #3498db; color: white'
+        return ''
+    
+    styled_df = display_df.style.map(color_rate, subset=['Multiplier']).map(color_source, subset=['Source'])
     st.dataframe(styled_df, use_container_width=True, height=400)
     
     # Time series chart
-    st.subheader("Multiplier Time Series (Last 100 Rounds)")
+    st.subheader("Multiplier Time Series")
+    
+    # Separate manual entries for highlighting
+    manual_mask = recent_df['data_source'] == 'manual' if 'data_source' in recent_df.columns else pd.Series([False] * len(recent_df))
     
     fig = go.Figure()
     
-    # Add line
+    # Add all points
     fig.add_trace(go.Scatter(
         x=recent_df.index,
         y=recent_df['rate'],
         mode='lines+markers',
-        name='Multiplier',
+        name='All Rounds',
         line=dict(color='#3498db', width=2),
         marker=dict(size=4, color=recent_df['rate'], colorscale='Viridis', showscale=True)
     ))
     
+    # Highlight manual entries if any
+    if manual_mask.any():
+        manual_df = recent_df[manual_mask]
+        fig.add_trace(go.Scatter(
+            x=manual_df.index,
+            y=manual_df['rate'],
+            mode='markers',
+            name='Manual Entries',
+            marker=dict(size=10, color='red', symbol='star')
+        ))
+    
     # Add horizontal lines
-    fig.add_hline(y=2.0, line_dash="dash", line_color="orange", annotation_text="2x", annotation_position="top right")
-    fig.add_hline(y=5.0, line_dash="dash", line_color="red", annotation_text="5x", annotation_position="top right")
-    fig.add_hline(y=10.0, line_dash="dash", line_color="purple", annotation_text="10x", annotation_position="top right")
+    fig.add_hline(y=2.0, line_dash="dash", line_color="orange", annotation_text="2x")
+    fig.add_hline(y=5.0, line_dash="dash", line_color="red", annotation_text="5x")
+    fig.add_hline(y=10.0, line_dash="dash", line_color="purple", annotation_text="10x")
     
     fig.update_layout(
         title='Crash Multipliers Over Time',
-        xaxis_title='Round Number (recent to oldest)',
+        xaxis_title='Round Number',
         yaxis_title='Multiplier (x)',
         height=450,
         hovermode='x unified'
@@ -363,8 +542,8 @@ with tab3:
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-# ----- TAB 4: Statistics -----
-with tab4:
+# ----- TAB 5: Statistics -----
+with main_tab5:
     st.header("Statistical Analysis")
     
     col1, col2 = st.columns(2)
@@ -391,7 +570,6 @@ with tab4:
         st.dataframe(stats_df, hide_index=True, use_container_width=True)
         
         # Skewness and Kurtosis
-        from scipy import stats
         st.subheader("📈 Distribution Shape")
         shape_df = pd.DataFrame({
             'Metric': ['Skewness', 'Kurtosis', 'Is Normal Distribution?'],
@@ -449,9 +627,9 @@ with tab4:
     
     # Add vertical lines for mean and median
     fig.add_vline(x=recent_df['rate'].mean(), line_dash="dash", line_color="red", 
-                  annotation_text=f"Mean: {recent_df['rate'].mean():.2f}x", annotation_position="top")
+                  annotation_text=f"Mean: {recent_df['rate'].mean():.2f}x")
     fig.add_vline(x=recent_df['rate'].median(), line_dash="dash", line_color="green",
-                  annotation_text=f"Median: {recent_df['rate'].median():.2f}x", annotation_position="bottom")
+                  annotation_text=f"Median: {recent_df['rate'].median():.2f}x")
     
     fig.update_layout(height=500, bargap=0.05)
     st.plotly_chart(fig, use_container_width=True)
@@ -485,54 +663,88 @@ with tab4:
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-# ----- TAB 5: Raw Data -----
-with tab5:
-    st.header("Raw Data Export")
+# ----- TAB 6: Data Management -----
+with main_tab6:
+    st.header("💾 Data Management")
     
-    # Show recent data
-    st.subheader(f"Last {len(recent_df)} Rounds")
-    raw_display = recent_df[['gameId', 'rate', 'endTime_dt', 'beginTime_dt', 'duration_ms']].copy()
-    raw_display.columns = ['Game ID', 'Multiplier', 'End Time', 'Start Time', 'Duration (ms)']
-    
-    st.dataframe(raw_display, use_container_width=True, height=400)
-    
-    # Export options
-    st.subheader("Export Data")
     col1, col2 = st.columns(2)
     
     with col1:
-        # Export to CSV
-        csv = recent_df[['gameId', 'rate', 'beginTime', 'endTime']].to_csv(index=False)
-        st.download_button(
-            label="📥 Download as CSV",
-            data=csv,
-            file_name=f"bc_crash_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
+        st.subheader("Export Data")
+        
+        # Export current data
+        if st.session_state.df is not None:
+            csv = st.session_state.df[['gameId', 'rate', 'beginTime', 'endTime', 'data_source']].to_csv(index=False)
+            st.download_button(
+                label="📥 Download All Data as CSV",
+                data=csv,
+                file_name=f"bc_crash_all_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        # Export manual entries only
+        if st.session_state.manual_entries:
+            manual_df = pd.DataFrame(st.session_state.manual_entries)
+            manual_csv = manual_df[['gameId', 'rate', 'endTime']].to_csv(index=False)
+            st.download_button(
+                label="📝 Download Manual Entries Only",
+                data=manual_csv,
+                file_name=f"manual_entries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
     
     with col2:
-        # Summary statistics export
-        summary = recent_df['rate'].describe().to_frame()
-        summary.columns = ['Value']
-        summary_csv = summary.to_csv()
-        st.download_button(
-            label="📊 Download Summary Stats",
-            data=summary_csv,
-            file_name=f"bc_crash_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
+        st.subheader("Clear Data")
+        
+        if st.button("🗑️ Clear All Manual Entries", type="secondary", use_container_width=True):
+            st.session_state.manual_entries = []
+            if st.session_state.data_source == "file":
+                # Reload just the file data
+                if uploaded_file:
+                    df_loaded = load_data_from_json(uploaded_file)
+                    if df_loaded is not None:
+                        st.session_state.df = df_loaded
+            else:
+                st.session_state.df = None
+            st.success("Manual entries cleared!")
+            st.rerun()
+        
+        if st.button("🔄 Reset All Data", type="primary", use_container_width=True):
+            st.session_state.df = None
+            st.session_state.manual_entries = []
+            st.session_state.data_source = "File Upload"
+            st.success("All data cleared!")
+            st.rerun()
     
-    # File info
-    with st.expander("ℹ️ Data Source Information"):
-        st.json({
-            "Total Rounds": len(df),
-            "Time Range": {
-                "Start": df['endTime_dt'].min().isoformat(),
-                "End": df['endTime_dt'].max().isoformat()
-            },
-            "File Uploaded": uploaded_file.name if uploaded_file else "None",
-            "Analysis Date": datetime.now().isoformat()
-        })
+    # Data preview
+    st.subheader("Data Preview")
+    if st.session_state.df is not None:
+        preview_df = st.session_state.df.tail(20)[['gameId', 'rate', 'endTime_dt', 'data_source']].copy()
+        preview_df = preview_df[::-1].reset_index(drop=True)
+        preview_df.columns = ['Game ID', 'Multiplier', 'Time', 'Source']
+        
+        # Color source
+        def color_source_preview(val):
+            if val == 'manual':
+                return 'background-color: #3498db; color: white'
+            return ''
+        
+        styled_preview = preview_df.style.map(color_source_preview, subset=['Source'])
+        st.dataframe(styled_preview, use_container_width=True, height=300)
+        
+        # Summary stats
+        st.subheader("Dataset Summary")
+        summary_stats = {
+            "Total Rounds": len(st.session_state.df),
+            "File Rounds": len(st.session_state.df[st.session_state.df['data_source'] == 'file']) if 'data_source' in st.session_state.df.columns else len(st.session_state.df) - len(st.session_state.manual_entries),
+            "Manual Rounds": len(st.session_state.manual_entries),
+            "Date Range": f"{st.session_state.df['endTime_dt'].min().strftime('%Y-%m-%d %H:%M')} to {st.session_state.df['endTime_dt'].max().strftime('%Y-%m-%d %H:%M')}",
+            "Avg Multiplier": f"{st.session_state.df['rate'].mean():.2f}x",
+            "Max Multiplier": f"{st.session_state.df['rate'].max():.2f}x"
+        }
+        
+        for key, value in summary_stats.items():
+            st.metric(key, value)
 
 # Footer
 st.markdown("---")
@@ -540,22 +752,37 @@ st.markdown("""
 <div style='text-align: center; color: gray; padding: 20px;'>
     <small>⚠️ <strong>Disclaimer:</strong> This tool is for educational and entertainment purposes only. 
     Crash games are random by design. Past performance does not indicate future results. 
-    Always gamble responsibly.</small>
+    Always gamble responsibly.</small><br>
+    <small>🔄 Manual entries are stored in session memory only and will be lost when the page is refreshed.</small>
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar info
+# Sidebar info and real-time stats
 st.sidebar.markdown("---")
 st.sidebar.info("""
 **How to use:**
-1. Upload your BC.Game crash JSON file
-2. Adjust the number of rounds to analyze
+1. Upload JSON file OR add manual entries
+2. Add new multipliers in real-time
 3. Check frequency distribution
 4. Find most overdue multipliers
-5. Analyze statistics and probabilities
+5. Analyze statistics
 
-**File format:** JSON array with game objects containing `rate`, `gameId`, `beginTime`, `endTime`, etc.
+**Manual Entry Methods:**
+- Single multiplier entry
+- Batch entry (one per line)
+- Quick preset buttons
 """)
+
+if st.session_state.manual_entries:
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 Live Stats")
+    st.sidebar.metric("Manual Entries", len(st.session_state.manual_entries))
+    
+    last_5 = pd.DataFrame(st.session_state.manual_entries[-5:])
+    if not last_5.empty:
+        st.sidebar.caption("Last 5 entries:")
+        for _, row in last_5.iterrows():
+            st.sidebar.text(f"• {row['rate']}x")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"🔄 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
