@@ -30,6 +30,8 @@ if 'manual_entries' not in st.session_state:
     st.session_state.manual_entries = []
 if 'data_source' not in st.session_state:
     st.session_state.data_source = "File Upload"
+if 'show_batch' not in st.session_state:
+    st.session_state.show_batch = False
 
 def load_data_from_json(file):
     """Load and process BC.Game crash JSON data"""
@@ -236,6 +238,24 @@ with main_tab1:
     table_col, entry_col = st.columns([2, 1])
     
     with table_col:
+        # TOP 3 MOST OVERDUE - Placed at the top
+        if len(overdue_df) > 0:
+            st.markdown("**🏆 Top 3 Most Overdue**")
+            top_cols = st.columns(3)
+            for i, col in enumerate(top_cols[:3]):
+                if i < len(overdue_df):
+                    top = overdue_df.iloc[i]
+                    medal = ["🥇", "🥈", "🥉"][i]
+                    with col:
+                        st.metric(
+                            label=f"{medal} {top['Range']}",
+                            value=f"{top['Overdue Score']:.1f}% overdue",
+                            delta=f"Expected: {top['Expected %']:.1f}% | Actual: {top['Actual %']:.1f}%"
+                        )
+        
+        # Add spacing
+        st.markdown("---")
+        
         # Display full overdue table
         st.markdown("**Most Overdue Predictions (All Ranges)**")
         st.dataframe(
@@ -251,21 +271,6 @@ with main_tab1:
             use_container_width=True,
             height=400
         )
-        
-        # Show top 3 as badges below the table
-        if len(overdue_df) > 0:
-            st.markdown("**🏆 Top 3 Most Overdue**")
-            top_cols = st.columns(3)
-            for i, col in enumerate(top_cols[:3]):
-                if i < len(overdue_df):
-                    top = overdue_df.iloc[i]
-                    medal = ["🥇", "🥈", "🥉"][i]
-                    with col:
-                        st.metric(
-                            label=f"{medal} {top['Range']}",
-                            value=f"{top['Overdue Score']:.1f}% overdue",
-                            delta=f"Expected: {top['Expected %']:.1f}% | Actual: {top['Actual %']:.1f}%"
-                        )
     
     with entry_col:
         # Compact manual entry section
@@ -293,7 +298,7 @@ with main_tab1:
             
             with col2:
                 if st.button("📦 Batch", use_container_width=True):
-                    st.session_state.show_batch = not st.session_state.get('show_batch', False)
+                    st.session_state.show_batch = not st.session_state.show_batch
                     st.rerun()
         
         # Quick presets in a grid
@@ -322,7 +327,7 @@ with main_tab1:
                 st.rerun()
         
         # Batch entry expander
-        if st.session_state.get('show_batch', False):
+        if st.session_state.show_batch:
             with st.expander("📦 Batch Entry", expanded=True):
                 batch_rates = st.text_area(
                     "Enter multipliers (one per line)",
@@ -728,9 +733,9 @@ st.sidebar.info("""
 **How to use:**
 1. Choose data source (File/Manual/Both)
 2. Add multipliers manually or upload JSON
-3. View overdue predictions in left panel
-4. Add new multipliers in right panel
-5. No scrolling needed - everything visible!
+3. View **Top 3 Most Overdue** at the top
+4. Scroll down for full predictions table
+5. Add new multipliers in right panel
 
 **Quick Entry:**
 - Single multiplier input
