@@ -57,7 +57,7 @@ def add_manual_entry(rate, game_id=None):
     new_entry = {
         'gameId': game_id if game_id else f"MANUAL_{len(st.session_state.manual_entries) + 1}",
         'hash': f"manual_{timestamp_ms}",
-        'beginTime': timestamp_ms - 30000,  # Assume 30 seconds before end
+        'beginTime': timestamp_ms - 30000,
         'endTime': timestamp_ms,
         'prepareTime': timestamp_ms - 35000,
         'fetchedAt': now.isoformat(),
@@ -73,7 +73,6 @@ def add_manual_entry(rate, game_id=None):
     
     st.session_state.manual_entries.append(new_entry)
     
-    # Update the main dataframe if it exists
     if st.session_state.df is not None:
         manual_df = pd.DataFrame(st.session_state.manual_entries)
         st.session_state.df = pd.concat([st.session_state.df, manual_df], ignore_index=True)
@@ -129,11 +128,10 @@ if data_option == "Use Manual Entry Only" and st.session_state.manual_entries:
 # Check if we have data
 if st.session_state.df is None and not st.session_state.manual_entries:
     if data_option == "Use Manual Entry Only":
-        st.info("👋 Welcome! Use the 'Manual Data Entry' section below to start adding multipliers.")
+        st.info("👋 Welcome! Use the 'Manual Data Entry' section in the Overdue tab to start adding multipliers.")
     else:
         st.warning("⚠️ Please upload a JSON file or add manual entries to begin analysis")
         
-        # Show example of expected format
         with st.expander("📋 Expected JSON format example"):
             st.code("""
 [
@@ -149,15 +147,6 @@ if st.session_state.df is None and not st.session_state.manual_entries:
   }
 ]
             """, language="json")
-    
-    # Show manual entry form anyway
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("➕ Quick Add")
-    quick_rate = st.sidebar.number_input("Multiplier", min_value=1.0, max_value=1000.0, value=1.5, step=0.1)
-    if st.sidebar.button("Add Multiplier", type="primary", use_container_width=True):
-        add_manual_entry(quick_rate)
-        st.sidebar.success(f"Added {quick_rate}x!")
-        st.rerun()
     
     if not st.session_state.manual_entries:
         st.stop()
@@ -194,7 +183,7 @@ with col4:
 with col5:
     st.metric("Min Multiplier", f"{recent_df['rate'].min():.2f}x")
 with col6:
-    manual_count = len([i for i in st.session_state.manual_entries if i['data_source'] == 'manual']) if st.session_state.manual_entries else 0
+    manual_count = len(st.session_state.manual_entries)
     st.metric("Manual Entries", manual_count)
 
 # Define multiplier ranges
@@ -204,34 +193,139 @@ labels = ['1.00-1.50', '1.51-2.00', '2.01-2.50', '2.51-3.00', '3.01-4.00',
           '15.01-25.00', '25.01-50.00', '50.01-100.00', '100.00+']
 
 # Main content area with tabs
-main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6 = st.tabs(
-    ["📝 Manual Entry", "📊 Frequency Table", "🎯 Most Overdue", "📈 Recent History", "📉 Statistics", "💾 Data Management"]
+main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(
+    ["🎯 Overdue & Manual Entry", "📊 Frequency Table", "📈 Recent History", "📉 Statistics"]
 )
 
-# ----- TAB 1: Manual Data Entry -----
+# ----- TAB 1: Combined Overdue & Manual Entry -----
 with main_tab1:
-    st.header("➕ Manual Data Entry")
-    st.markdown("Add new crash multipliers manually to update the analysis in real-time.")
+    st.header("🎯 Most Overdue Multipliers & Manual Entry")
     
-    col1, col2, col3 = st.columns(3)
+    # Create two columns for the top section
+    col_left, col_right = st.columns([2, 1])
     
-    with col1:
-        st.subheader("Single Entry")
-        rate_single = st.number_input("Multiplier", min_value=1.0, max_value=1000.0, value=1.5, step=0.1, key="single_rate")
-        game_id_single = st.text_input("Game ID (optional)", placeholder="Leave empty for auto-generate", key="single_gameid")
+    with col_left:
+        st.subheader("🔥 Most Overdue Predictions")
+        st.markdown("Based on **historical frequency** vs **recent appearance**")
+        
+        # Calculate expected frequency based on FULL historical data
+        full_df_copy = df.copy()
+        full_df_copy['range'] = pd.cut(full_df_copy['rate'], bins=bins, labels=labels, right=False)
+        historical_freq = full_df_copy['range'].value_counts(normalize=True)
+        
+        # Calculate current frequency in recent rounds
+        recent_df_copy = recent_df.copy()
+        recent_df_copy['range'] = pd.cut(recent_df_copy['rate'], bins=bins, labels=labels, right=False)
+        current_freq = recent_df_copy['range'].value_counts(normalize=True)
+        
+        # Calculate overdue score
+        overdue_scores = {}
+        for label in labels:
+            expected = historical_freq.get(label, 0)
+            actual = current_freq.get(label, 0)
+            overdue_scores[label] = max(0, expected - actual)
+        
+        # Create overdue dataframe
+        overdue_df = pd.DataFrame([
+            {'Range': k, 
+             'Overdue Score': v * 100, 
+             'Expected %': historical_freq.get(k, 0) * 100,
+             'Actual %': current_freq.get(k, 0) * 100,
+             'Gap': (historical_freq.get(k, 0) - current_freq.get(k, 0)) * 100}
+            for k, v in overdue_scores.items()
+        ])
+        overdue_df = overdue_df.sort_values('Overdue Score', ascending=False).head(10)
+        
+        # Display overdue table
+        st.dataframe(
+            overdue_df,
+            column_config={
+                "Range": st.column_config.TextColumn("Multiplier Range", width="medium"),
+                "Overdue Score": st.column_config.NumberColumn("Overdue Score", format="%.1f%%", width="small"),
+                "Expected %": st.column_config.NumberColumn("Expected %", format="%.1f%%", width="small"),
+                "Actual %": st.column_config.NumberColumn("Actual %", format="%.1f%%", width="small"),
+                "Gap": st.column_config.NumberColumn("Gap", format="%.1f%%", width="small")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # Visualize top overdue
+        fig = px.bar(
+            overdue_df.head(7),
+            x='Range',
+            y='Overdue Score',
+            title='Top 7 Most Overdue Multiplier Ranges',
+            color='Overdue Score',
+            color_continuous_scale='Reds',
+            text='Overdue Score'
+        )
+        fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+        fig.update_layout(xaxis_tickangle=-45, height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col_right:
+        st.subheader("🏆 Top Overdue")
+        if len(overdue_df) > 0:
+            top1 = overdue_df.iloc[0]
+            st.success(f"""
+            ### 🥇 Most Overdue
+            
+            **{top1['Range']}**
+            
+            Overdue by **{top1['Overdue Score']:.1f}%**
+            
+            Expected: {top1['Expected %']:.1f}% | Actual: {top1['Actual %']:.1f}%
+            """)
+            
+            if len(overdue_df) > 1:
+                top2 = overdue_df.iloc[1]
+                st.info(f"""
+                ### 🥈 Runner Up
+                
+                **{top2['Range']}**
+                
+                Overdue by **{top2['Overdue Score']:.1f}%**
+                """)
+            
+            if len(overdue_df) > 2:
+                top3 = overdue_df.iloc[2]
+                st.info(f"""
+                ### 🥉 Third Place
+                
+                **{top3['Range']}**
+                
+                Overdue by **{top3['Overdue Score']:.1f}%**
+                """)
+    
+    # Divider
+    st.markdown("---")
+    
+    # Manual Entry Section
+    st.subheader("➕ Manual Data Entry")
+    st.markdown("Add new crash multipliers to update predictions in real-time")
+    
+    # Create three columns for different entry methods
+    entry_col1, entry_col2, entry_col3 = st.columns(3)
+    
+    with entry_col1:
+        st.markdown("**Single Entry**")
+        rate_single = st.number_input("Multiplier", min_value=1.0, max_value=1000.0, value=1.5, step=0.1, key="single_rate", label_visibility="collapsed")
+        game_id_single = st.text_input("Game ID (optional)", placeholder="Auto-generate if empty", key="single_gameid", label_visibility="collapsed")
         
         if st.button("➕ Add Single Multiplier", type="primary", use_container_width=True):
             add_manual_entry(rate_single, game_id_single if game_id_single else None)
             st.success(f"✅ Added {rate_single}x to the dataset!")
             st.rerun()
     
-    with col2:
-        st.subheader("Batch Entry")
+    with entry_col2:
+        st.markdown("**Batch Entry**")
         batch_rates = st.text_area(
             "Enter multipliers (one per line)",
             placeholder="1.5\n2.0\n1.2\n3.5\n10.0",
-            height=150,
-            key="batch_rates"
+            height=100,
+            key="batch_rates",
+            label_visibility="collapsed"
         )
         
         if st.button("📦 Add Batch", use_container_width=True):
@@ -244,46 +338,91 @@ with main_tab1:
             else:
                 st.warning("Please enter at least one multiplier")
     
-    with col3:
-        st.subheader("Quick Presets")
-        st.markdown("Click to add common multipliers:")
-        
+    with entry_col3:
+        st.markdown("**Quick Presets**")
         preset_col1, preset_col2 = st.columns(2)
         with preset_col1:
-            if st.button("1.0x (Crash)", use_container_width=True):
+            if st.button("1.0x (Crash)", use_container_width=True, key="preset_1"):
                 add_manual_entry(1.0)
                 st.rerun()
-            if st.button("1.5x", use_container_width=True):
+            if st.button("1.5x", use_container_width=True, key="preset_2"):
                 add_manual_entry(1.5)
                 st.rerun()
-            if st.button("2.0x", use_container_width=True):
+            if st.button("2.0x", use_container_width=True, key="preset_3"):
                 add_manual_entry(2.0)
                 st.rerun()
-            if st.button("3.0x", use_container_width=True):
+            if st.button("3.0x", use_container_width=True, key="preset_4"):
                 add_manual_entry(3.0)
                 st.rerun()
         
         with preset_col2:
-            if st.button("5.0x", use_container_width=True):
+            if st.button("5.0x", use_container_width=True, key="preset_5"):
                 add_manual_entry(5.0)
                 st.rerun()
-            if st.button("10.0x", use_container_width=True):
+            if st.button("10.0x", use_container_width=True, key="preset_6"):
                 add_manual_entry(10.0)
                 st.rerun()
-            if st.button("50.0x", use_container_width=True):
+            if st.button("50.0x", use_container_width=True, key="preset_7"):
                 add_manual_entry(50.0)
                 st.rerun()
-            if st.button("100.0x", use_container_width=True):
+            if st.button("100.0x", use_container_width=True, key="preset_8"):
                 add_manual_entry(100.0)
                 st.rerun()
     
     # Recent manual entries
     if st.session_state.manual_entries:
+        st.markdown("---")
         st.subheader("📋 Recent Manual Entries")
+        
+        # Show last 10 manual entries
         manual_df = pd.DataFrame(st.session_state.manual_entries[-10:][::-1])
         manual_display = manual_df[['gameId', 'rate', 'endTime_dt']].copy()
         manual_display.columns = ['Game ID', 'Multiplier', 'Added At']
-        st.dataframe(manual_display, use_container_width=True, hide_index=True)
+        
+        # Color code the multipliers
+        def color_manual_rate(val):
+            if val < 1.5:
+                return 'background-color: #2ecc71; color: white'
+            elif val < 2.0:
+                return 'background-color: #f39c12; color: white'
+            elif val < 5.0:
+                return 'background-color: #e67e22; color: white'
+            elif val < 10.0:
+                return 'background-color: #e74c3c; color: white'
+            else:
+                return 'background-color: #8e44ad; color: white'
+        
+        styled_manual = manual_display.style.map(color_manual_rate, subset=['Multiplier'])
+        st.dataframe(styled_manual, use_container_width=True, hide_index=True)
+        
+        # Show stats from manual entries
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Manual", len(st.session_state.manual_entries))
+        with col2:
+            avg_manual = np.mean([e['rate'] for e in st.session_state.manual_entries])
+            st.metric("Avg Manual Multiplier", f"{avg_manual:.2f}x")
+        with col3:
+            max_manual = max([e['rate'] for e in st.session_state.manual_entries])
+            st.metric("Max Manual Multiplier", f"{max_manual:.2f}x")
+    
+    # Real-time update indicator
+    if st.session_state.manual_entries:
+        st.info(f"🔄 Real-time: Last {len(st.session_state.manual_entries)} manual entries have been incorporated into the overdue calculation above.")
+    
+    # Methodology explanation
+    with st.expander("ℹ️ How 'Overdue' is calculated"):
+        st.markdown("""
+        **Methodology:**
+        1. Calculate the **expected frequency** of each multiplier range from the complete historical dataset
+        2. Calculate the **actual frequency** in the last N rounds
+        3. **Overdue Score = Expected % - Actual %** (only when Expected > Actual)
+        4. Higher score = more overdue
+        
+        **Example:** If a range appears 15% of the time historically, but only 5% in recent rounds, it has a 10% overdue score.
+        
+        ⚠️ **Disclaimer:** This is statistical analysis only. Crash multipliers are random and past patterns don't guarantee future results.
+        """)
 
 # ----- TAB 2: Multiplier Frequency Table -----
 with main_tab2:
@@ -312,7 +451,7 @@ with main_tab2:
         use_container_width=True
     )
     
-    # Bar chart
+    # Bar chart and pie chart
     col1, col2 = st.columns(2)
     
     with col1:
@@ -330,7 +469,6 @@ with main_tab2:
         st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        # Pie chart for major categories
         major_cats = recent_df_copy.copy()
         major_cats['category'] = pd.cut(
             major_cats['rate'], 
@@ -350,87 +488,8 @@ with main_tab2:
         fig2.update_layout(height=500)
         st.plotly_chart(fig2, use_container_width=True)
 
-# ----- TAB 3: Most Overdue Multipliers -----
+# ----- TAB 3: Recent History -----
 with main_tab3:
-    st.header("🎯 Most Overdue Multipliers")
-    st.markdown("""
-    Based on **historical frequency from all data**, these multiplier ranges are **"overdue"** - meaning they've appeared 
-    less frequently than expected in recent rounds.
-    """)
-    
-    # Calculate expected frequency based on FULL historical data
-    full_df_copy = df.copy()
-    full_df_copy['range'] = pd.cut(full_df_copy['rate'], bins=bins, labels=labels, right=False)
-    historical_freq = full_df_copy['range'].value_counts(normalize=True)
-    
-    # Calculate current frequency in recent rounds
-    current_freq = recent_df_copy['range'].value_counts(normalize=True)
-    
-    # Calculate overdue score (expected - actual)
-    overdue_scores = {}
-    for label in labels:
-        expected = historical_freq.get(label, 0)
-        actual = current_freq.get(label, 0)
-        overdue_scores[label] = max(0, expected - actual)
-    
-    # Create overdue dataframe
-    overdue_df = pd.DataFrame([
-        {'Range': k, 
-         'Overdue Score': v * 100, 
-         'Expected %': historical_freq.get(k, 0) * 100,
-         'Actual %': current_freq.get(k, 0) * 100,
-         'Gap': (historical_freq.get(k, 0) - current_freq.get(k, 0)) * 100}
-        for k, v in overdue_scores.items()
-    ])
-    overdue_df = overdue_df.sort_values('Overdue Score', ascending=False).head(10)
-    
-    # Highlight top overdue
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.dataframe(
-            overdue_df,
-            column_config={
-                "Range": st.column_config.TextColumn("Multiplier Range", width="medium"),
-                "Overdue Score": st.column_config.NumberColumn("Overdue Score", format="%.1f%%", width="small"),
-                "Expected %": st.column_config.NumberColumn("Expected %", format="%.1f%%", width="small"),
-                "Actual %": st.column_config.NumberColumn("Actual %", format="%.1f%%", width="small"),
-                "Gap": st.column_config.NumberColumn("Gap", format="%.1f%%", width="small")
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-    
-    with col2:
-        if len(overdue_df) > 0:
-            top_overdue = overdue_df.iloc[0]['Range']
-            top_score = overdue_df.iloc[0]['Overdue Score']
-            st.success(f"### 🔥 Most Overdue\n\n**{top_overdue}**\n\nOverdue by **{top_score:.1f}%**")
-            
-            if len(overdue_df) > 1:
-                st.info(f"### 🥈 Runner Up\n\n**{overdue_df.iloc[1]['Range']}**\n\nOverdue by **{overdue_df.iloc[1]['Overdue Score']:.1f}%**")
-    
-    # Visualize top overdue
-    fig = px.bar(
-        overdue_df.head(7),
-        x='Range',
-        y='Overdue Score',
-        title='Top 7 Most Overdue Multiplier Ranges',
-        color='Overdue Score',
-        color_continuous_scale='Reds',
-        text='Overdue Score'
-    )
-    fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-    fig.update_layout(xaxis_tickangle=-45, height=450)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Real-time prediction based on manual entries
-    if st.session_state.manual_entries:
-        st.subheader("🔄 Real-time Prediction Update")
-        st.info(f"Last {len(st.session_state.manual_entries)} manual entries have been incorporated into the overdue calculation above.")
-
-# ----- TAB 4: Recent History -----
-with main_tab4:
     st.header("Recent Crash History")
     
     # Show last 50 rounds with formatting
@@ -453,7 +512,6 @@ with main_tab4:
                 return 'background-color: #8e44ad; color: white'
         return ''
     
-    # Color source column
     def color_source(val):
         if val == 'manual':
             return 'background-color: #3498db; color: white'
@@ -465,12 +523,10 @@ with main_tab4:
     # Time series chart
     st.subheader("Multiplier Time Series")
     
-    # Separate manual entries for highlighting
     manual_mask = recent_df['data_source'] == 'manual' if 'data_source' in recent_df.columns else pd.Series([False] * len(recent_df))
     
     fig = go.Figure()
     
-    # Add all points
     fig.add_trace(go.Scatter(
         x=recent_df.index,
         y=recent_df['rate'],
@@ -480,7 +536,6 @@ with main_tab4:
         marker=dict(size=4, color=recent_df['rate'], colorscale='Viridis', showscale=True)
     ))
     
-    # Highlight manual entries if any
     if manual_mask.any():
         manual_df = recent_df[manual_mask]
         fig.add_trace(go.Scatter(
@@ -491,7 +546,6 @@ with main_tab4:
             marker=dict(size=10, color='red', symbol='star')
         ))
     
-    # Add horizontal lines
     fig.add_hline(y=2.0, line_dash="dash", line_color="orange", annotation_text="2x")
     fig.add_hline(y=5.0, line_dash="dash", line_color="red", annotation_text="5x")
     fig.add_hline(y=10.0, line_dash="dash", line_color="purple", annotation_text="10x")
@@ -542,8 +596,8 @@ with main_tab4:
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-# ----- TAB 5: Statistics -----
-with main_tab5:
+# ----- TAB 4: Statistics -----
+with main_tab4:
     st.header("Statistical Analysis")
     
     col1, col2 = st.columns(2)
@@ -569,7 +623,6 @@ with main_tab5:
         })
         st.dataframe(stats_df, hide_index=True, use_container_width=True)
         
-        # Skewness and Kurtosis
         st.subheader("📈 Distribution Shape")
         shape_df = pd.DataFrame({
             'Metric': ['Skewness', 'Kurtosis', 'Is Normal Distribution?'],
@@ -584,7 +637,6 @@ with main_tab5:
     with col2:
         st.subheader("🎯 Probability Analysis")
         
-        # Calculate probabilities for different cash-out targets
         targets = [1.5, 2.0, 2.5, 3.0, 5.0, 10.0, 20.0, 50.0]
         probs = []
         cumulative = []
@@ -602,7 +654,6 @@ with main_tab5:
         })
         st.dataframe(prob_df, hide_index=True, use_container_width=True)
         
-        # Risk insight
         st.info("""
         **💡 Risk-Reward Insight:**
         
@@ -625,7 +676,6 @@ with main_tab5:
         opacity=0.8
     )
     
-    # Add vertical lines for mean and median
     fig.add_vline(x=recent_df['rate'].mean(), line_dash="dash", line_color="red", 
                   annotation_text=f"Mean: {recent_df['rate'].mean():.2f}x")
     fig.add_vline(x=recent_df['rate'].median(), line_dash="dash", line_color="green",
@@ -649,7 +699,6 @@ with main_tab5:
         line=dict(color='#3498db', width=2)
     ))
     
-    # Add reference lines
     fig2.add_hline(y=50, line_dash="dash", line_color="gray", annotation_text="50%")
     fig2.add_vline(x=recent_df['rate'].median(), line_dash="dash", line_color="red", 
                    annotation_text=f"Median: {recent_df['rate'].median():.2f}x")
@@ -663,43 +712,26 @@ with main_tab5:
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-# ----- TAB 6: Data Management -----
-with main_tab6:
-    st.header("💾 Data Management")
-    
+# Data Management in sidebar
+with st.sidebar.expander("💾 Data Management", expanded=False):
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Export Data")
-        
-        # Export current data
-        if st.session_state.df is not None:
-            csv = st.session_state.df[['gameId', 'rate', 'beginTime', 'endTime', 'data_source']].to_csv(index=False)
-            st.download_button(
-                label="📥 Download All Data as CSV",
-                data=csv,
-                file_name=f"bc_crash_all_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-        
-        # Export manual entries only
-        if st.session_state.manual_entries:
-            manual_df = pd.DataFrame(st.session_state.manual_entries)
-            manual_csv = manual_df[['gameId', 'rate', 'endTime']].to_csv(index=False)
-            st.download_button(
-                label="📝 Download Manual Entries Only",
-                data=manual_csv,
-                file_name=f"manual_entries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+        if st.button("📥 Export Data", use_container_width=True):
+            if st.session_state.df is not None:
+                csv = st.session_state.df[['gameId', 'rate', 'beginTime', 'endTime', 'data_source']].to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"bc_crash_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    key="download_btn"
+                )
     
     with col2:
-        st.subheader("Clear Data")
-        
-        if st.button("🗑️ Clear All Manual Entries", type="secondary", use_container_width=True):
+        if st.button("🗑️ Clear Manual", use_container_width=True):
             st.session_state.manual_entries = []
             if st.session_state.data_source == "file":
-                # Reload just the file data
                 if uploaded_file:
                     df_loaded = load_data_from_json(uploaded_file)
                     if df_loaded is not None:
@@ -708,43 +740,6 @@ with main_tab6:
                 st.session_state.df = None
             st.success("Manual entries cleared!")
             st.rerun()
-        
-        if st.button("🔄 Reset All Data", type="primary", use_container_width=True):
-            st.session_state.df = None
-            st.session_state.manual_entries = []
-            st.session_state.data_source = "File Upload"
-            st.success("All data cleared!")
-            st.rerun()
-    
-    # Data preview
-    st.subheader("Data Preview")
-    if st.session_state.df is not None:
-        preview_df = st.session_state.df.tail(20)[['gameId', 'rate', 'endTime_dt', 'data_source']].copy()
-        preview_df = preview_df[::-1].reset_index(drop=True)
-        preview_df.columns = ['Game ID', 'Multiplier', 'Time', 'Source']
-        
-        # Color source
-        def color_source_preview(val):
-            if val == 'manual':
-                return 'background-color: #3498db; color: white'
-            return ''
-        
-        styled_preview = preview_df.style.map(color_source_preview, subset=['Source'])
-        st.dataframe(styled_preview, use_container_width=True, height=300)
-        
-        # Summary stats
-        st.subheader("Dataset Summary")
-        summary_stats = {
-            "Total Rounds": len(st.session_state.df),
-            "File Rounds": len(st.session_state.df[st.session_state.df['data_source'] == 'file']) if 'data_source' in st.session_state.df.columns else len(st.session_state.df) - len(st.session_state.manual_entries),
-            "Manual Rounds": len(st.session_state.manual_entries),
-            "Date Range": f"{st.session_state.df['endTime_dt'].min().strftime('%Y-%m-%d %H:%M')} to {st.session_state.df['endTime_dt'].max().strftime('%Y-%m-%d %H:%M')}",
-            "Avg Multiplier": f"{st.session_state.df['rate'].mean():.2f}x",
-            "Max Multiplier": f"{st.session_state.df['rate'].max():.2f}x"
-        }
-        
-        for key, value in summary_stats.items():
-            st.metric(key, value)
 
 # Footer
 st.markdown("---")
@@ -757,32 +752,31 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar info and real-time stats
+# Sidebar info
 st.sidebar.markdown("---")
 st.sidebar.info("""
 **How to use:**
-1. Upload JSON file OR add manual entries
-2. Add new multipliers in real-time
-3. Check frequency distribution
-4. Find most overdue multipliers
-5. Analyze statistics
+1. Choose data source (File/Manual/Both)
+2. Add multipliers manually or upload JSON
+3. Check **Overdue & Manual Entry** tab for predictions
+4. View frequency and statistics in other tabs
 
 **Manual Entry Methods:**
-- Single multiplier entry
+- Single multiplier with optional Game ID
 - Batch entry (one per line)
 - Quick preset buttons
 """)
 
 if st.session_state.manual_entries:
     st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 Live Stats")
-    st.sidebar.metric("Manual Entries", len(st.session_state.manual_entries))
+    st.sidebar.subheader("📊 Quick Stats")
+    st.sidebar.metric("Manual Count", len(st.session_state.manual_entries))
     
-    last_5 = pd.DataFrame(st.session_state.manual_entries[-5:])
-    if not last_5.empty:
-        st.sidebar.caption("Last 5 entries:")
-        for _, row in last_5.iterrows():
+    last_3 = pd.DataFrame(st.session_state.manual_entries[-3:])
+    if not last_3.empty:
+        st.sidebar.caption("Last 3 entries:")
+        for _, row in last_3.iterrows():
             st.sidebar.text(f"• {row['rate']}x")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"🔄 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.sidebar.caption(f
