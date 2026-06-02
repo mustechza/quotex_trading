@@ -779,4 +779,4 @@ if st.session_state.manual_entries:
             st.sidebar.text(f"• {row['rate']}x")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f
+st.sidebar.caption(f"🔄 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
