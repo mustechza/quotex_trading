@@ -201,73 +201,60 @@ main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(
 with main_tab1:
     st.header("🎯 Most Overdue Multipliers & Manual Entry")
     
-    # Create two columns for the top section
-    col_left, col_right = st.columns([2, 1])
+    # Calculate expected frequency based on FULL historical data
+    full_df_copy = df.copy()
+    full_df_copy['range'] = pd.cut(full_df_copy['rate'], bins=bins, labels=labels, right=False)
+    historical_freq = full_df_copy['range'].value_counts(normalize=True)
     
-    with col_left:
-        st.subheader("🔥 Most Overdue Predictions")
-        st.markdown("Based on **historical frequency** vs **recent appearance**")
-        
-        # Calculate expected frequency based on FULL historical data
-        full_df_copy = df.copy()
-        full_df_copy['range'] = pd.cut(full_df_copy['rate'], bins=bins, labels=labels, right=False)
-        historical_freq = full_df_copy['range'].value_counts(normalize=True)
-        
-        # Calculate current frequency in recent rounds
-        recent_df_copy = recent_df.copy()
-        recent_df_copy['range'] = pd.cut(recent_df_copy['rate'], bins=bins, labels=labels, right=False)
-        current_freq = recent_df_copy['range'].value_counts(normalize=True)
-        
-        # Calculate overdue score
-        overdue_scores = {}
-        for label in labels:
-            expected = historical_freq.get(label, 0)
-            actual = current_freq.get(label, 0)
-            overdue_scores[label] = max(0, expected - actual)
-        
-        # Create overdue dataframe
-        overdue_df = pd.DataFrame([
-            {'Range': k, 
-             'Overdue Score': v * 100, 
-             'Expected %': historical_freq.get(k, 0) * 100,
-             'Actual %': current_freq.get(k, 0) * 100,
-             'Gap': (historical_freq.get(k, 0) - current_freq.get(k, 0)) * 100}
-            for k, v in overdue_scores.items()
-        ])
-        overdue_df = overdue_df.sort_values('Overdue Score', ascending=False).head(10)
-        
-        # Display overdue table
-        st.dataframe(
-            overdue_df,
-            column_config={
-                "Range": st.column_config.TextColumn("Multiplier Range", width="medium"),
-                "Overdue Score": st.column_config.NumberColumn("Overdue Score", format="%.1f%%", width="small"),
-                "Expected %": st.column_config.NumberColumn("Expected %", format="%.1f%%", width="small"),
-                "Actual %": st.column_config.NumberColumn("Actual %", format="%.1f%%", width="small"),
-                "Gap": st.column_config.NumberColumn("Gap", format="%.1f%%", width="small")
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-        
-        # Visualize top overdue
-        fig = px.bar(
-            overdue_df.head(7),
-            x='Range',
-            y='Overdue Score',
-            title='Top 7 Most Overdue Multiplier Ranges',
-            color='Overdue Score',
-            color_continuous_scale='Reds',
-            text='Overdue Score'
-        )
-        fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-        fig.update_layout(xaxis_tickangle=-45, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    # Calculate current frequency in recent rounds
+    recent_df_copy = recent_df.copy()
+    recent_df_copy['range'] = pd.cut(recent_df_copy['rate'], bins=bins, labels=labels, right=False)
+    current_freq = recent_df_copy['range'].value_counts(normalize=True)
     
-    with col_right:
-        st.subheader("🏆 Top Overdue")
-        if len(overdue_df) > 0:
-            top1 = overdue_df.iloc[0]
+    # Calculate overdue score
+    overdue_scores = {}
+    for label in labels:
+        expected = historical_freq.get(label, 0)
+        actual = current_freq.get(label, 0)
+        overdue_scores[label] = max(0, expected - actual)
+    
+    # Create overdue dataframe
+    overdue_df = pd.DataFrame([
+        {'Range': k, 
+         'Overdue Score': v * 100, 
+         'Expected %': historical_freq.get(k, 0) * 100,
+         'Actual %': current_freq.get(k, 0) * 100,
+         'Gap': (historical_freq.get(k, 0) - current_freq.get(k, 0)) * 100}
+        for k, v in overdue_scores.items()
+    ])
+    overdue_df = overdue_df.sort_values('Overdue Score', ascending=False)
+    
+    # Display Most Overdue Predictions table
+    st.subheader("📊 Most Overdue Predictions")
+    st.markdown("Based on **historical frequency** vs **recent appearance**")
+    
+    st.dataframe(
+        overdue_df,
+        column_config={
+            "Range": st.column_config.TextColumn("Multiplier Range", width="medium"),
+            "Overdue Score": st.column_config.NumberColumn("Overdue Score", format="%.1f%%", width="small"),
+            "Expected %": st.column_config.NumberColumn("Expected %", format="%.1f%%", width="small"),
+            "Actual %": st.column_config.NumberColumn("Actual %", format="%.1f%%", width="small"),
+            "Gap": st.column_config.NumberColumn("Gap", format="%.1f%%", width="small")
+        },
+        hide_index=True,
+        use_container_width=True
+    )
+    
+    # Top Overdue Section (below the table)
+    st.subheader("🏆 Top Overdue Ranges")
+    
+    # Create three columns for top 3 overdue
+    top_cols = st.columns(3)
+    
+    if len(overdue_df) > 0:
+        top1 = overdue_df.iloc[0]
+        with top_cols[0]:
             st.success(f"""
             ### 🥇 Most Overdue
             
@@ -275,28 +262,40 @@ with main_tab1:
             
             Overdue by **{top1['Overdue Score']:.1f}%**
             
-            Expected: {top1['Expected %']:.1f}% | Actual: {top1['Actual %']:.1f}%
+            Expected: {top1['Expected %']:.1f}%  
+            Actual: {top1['Actual %']:.1f}%
             """)
-            
-            if len(overdue_df) > 1:
-                top2 = overdue_df.iloc[1]
+        
+        if len(overdue_df) > 1:
+            top2 = overdue_df.iloc[1]
+            with top_cols[1]:
                 st.info(f"""
-                ### 🥈 Runner Up
+                ### 🥈 Second Place
                 
                 **{top2['Range']}**
                 
                 Overdue by **{top2['Overdue Score']:.1f}%**
+                
+                Expected: {top2['Expected %']:.1f}%  
+                Actual: {top2['Actual %']:.1f}%
                 """)
-            
-            if len(overdue_df) > 2:
-                top3 = overdue_df.iloc[2]
+        
+        if len(overdue_df) > 2:
+            top3 = overdue_df.iloc[2]
+            with top_cols[2]:
                 st.info(f"""
                 ### 🥉 Third Place
                 
                 **{top3['Range']}**
                 
                 Overdue by **{top3['Overdue Score']:.1f}%**
+                
+                Expected: {top3['Expected %']:.1f}%  
+                Actual: {top3['Actual %']:.1f}%
                 """)
+    
+    # Add a note about the data
+    st.caption(f"📊 Based on {len(historical_freq)} total historical rounds and {len(recent_df)} recent rounds")
     
     # Divider
     st.markdown("---")
